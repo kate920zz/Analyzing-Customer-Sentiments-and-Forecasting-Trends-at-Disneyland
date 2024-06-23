@@ -1,0 +1,169 @@
+---
+title: "TS_Final"
+author: "Ruochen Hu"
+date: "2024-04-23"
+output: html_document
+---
+
+```{r}
+setwd("/Users/liushuwen/Desktop/R5205")
+data=read.csv('cleandata.csv')
+data 
+```
+
+```{r}
+#ts on rating
+#ts
+library(tseries)
+library(forecast)
+#install.packages('lubridate')
+library(lubridate)
+data$Date <- as.Date(paste(data$Year, data$Month, "01", sep = "-"))
+data
+ts_data <- ts(data$Rating, start = c(2010, 03),end=c(2019,05),frequency = 12)
+seasonplot(ts_data)
+train_data=window(ts_data,end=c(2017, 12))
+test_data=window(ts_data,start=c(2018,01))
+
+# check for autocorrelations
+autoplot(train_data) #
+```
+
+
+```{r}
+#Graph to check trend, seasonality,and reminders
+train_data%>%
+  stl(s.window = 'periodic')%>%
+  autoplot()
+``` 
+The graph displays distinct trends and seasonal shifts in people's ratings. Although the pronounced cycles in the train data might initially suggest non-stationarity, their periodic nature indicates that a seasonal naive model could be a suitable approach for forecasting.
+
+```{r}
+seasonal_naive_model = snaive(train_data,h=17)
+seasonal_naive_model
+
+library(forecast) # Set of forecasting functions
+
+#Plot the forecast to see results
+autoplot(train_data)+
+  autolayer(seasonal_naive_model,PI=F,size=1.1,series='Seasonal Naive Model')+
+  autolayer(test_data)
+```
+From the forecast graph, we can see that the seasonal naive model closely follows the seasonal trend in the test data. This observation allows us to confirm the validity of our methodology. We can further demonstrate the model's applicability by checking its accuracy.
+
+```{r}
+#We checked the accuracy of seasonal_naive_model
+seasonal_naive_model$mean
+accuracy(seasonal_naive_model, ts_data)
+```
+From the printed results for the mean of forecasts, we can see that Feburary has a the lowest average rating among its counterparts. The forecast ratings in June and Novemeber are both 4 out of 5, which are also the valley in all-year rating.
+
+In the accuracy assessment, the test data yielded an RMSE (Root Mean Square Error)
+of 1.66, while the train data recorded an RMSE of 1.24.
+These figures are justifiable given that Disneyland's consistent service
+quality minimizes random fluctuations in customer experience ratings
+across different seasons. Typically, the most significant variables
+impacting customer satisfaction would be queuing times as discussed in the text
+mining part, which occurs cyclinically.
+
+To double check our seasonal naive model make good prediction, we need to examine if the residuals are white noise. 
+```{r}
+checkresiduals(seasonal_naive_model)
+residuals_data <- residuals(seasonal_naive_model)
+```
+The small p-value (0.0011) from the Ljung-Box test provides strong evidence of autocorrelation in the residuals across the first 19 lags. Furthermore, the autocorrelation plots confirm that the residuals from the seasonal naive model do not constitute white noise.
+
+Consequently, we must consider an alternative modeling approach to address the heteroskedasticity within the residuals. An ARIMA model is well-suited for eliminating autocorrelations and seasonality, making it the preferred choice in this scenario."
+```{r}
+arima_model <- Arima(train_data, order=c(0,1,1), seasonal=list(order=c(1,1,1), period=12))
+
+# Print the summary of the ARIMA model
+summary(arima_model)
+
+# You can also forecast using this model
+forecasted_values <- forecast(arima_model, h=length(test_data))
+plot(forecasted_values)
+```
+Based on our plots, we can see that our points of forecast greatly captures seasonality and trend. To better assess the accuracy of our forecast mode, we use ADF test to see if the residuals are independently and identically distributed, iid. 
+```{r}
+arima_residuals <-residuals(arima_model)
+# Check the residuals of the ARIMA model
+adf_test_arima <- adf.test(arima_residuals, alternative = "stationary")
+print(adf_test_arima)
+
+# If the residuals from ARIMA model are stationary, you can then check for white noise
+Box.test(arima_residuals, type = "Ljung-Box")
+```
+Based on our results in Augmentd Dickey-Fuller test, we can see that a p-value of 0.01 have made us succeed to reject the null hypothesis and conclude that the residuals from arima model are stationary. In addition, Box-Ljung test shows that our residuals are indeed white noise. We can conclude that our ARIMA model make great forecast for ratings. 
+
+```{r}
+#ts on population
+library(dplyr)
+library(forecast)
+library(lubridate)
+
+#This code aggregates the data by year and month, calculates the count of records for each combination of year and month,and creates a new column "Year_Month" to represent this combination. Finally, it arranges the resulting dataframe in chronological order.
+monthly_counts <- data %>%
+  group_by(Year, Month) %>%
+  summarise(Count = n()) %>%
+  mutate(Year_Month = paste(Year, Month, sep = "-")) %>%
+  select(Year_Month, Count) %>%
+  arrange(Year_Month)
+monthly_counts
+
+#Setting Data as Time Series for later calculation
+ts_data <- ts(monthly_counts$Count, start = c(2010, 03), end = c(2019, 05), frequency = 12)
+
+#It converts the "Count" column from the "monthly_counts" dataframe into a time series object, specifying the start and end dates as well as the frequency of observations per year.
+
+```
+
+
+It then splits this time series dataset into training and testing sets. The training set includes data up to April 2018, while the testing set includes data from May 2018 to May 2019.
+```{r}
+train_data <- window(ts_data, end = c(2018, 04))
+test_data <- window(ts_data, start = c(2018, 05), end = c(2019, 05))
+
+# Apply Box-Cox transformation based on the training dataset to find the optimal lambda parameter. By using this, can ensure the final data variance is stabilized.
+train_data_boxcox <- BoxCox(train_data, lambda = BoxCox.lambda(train_data))
+# Employ the diff function to compute the differences between consecutive elements in the train dataset. Setting lag equal to 4 means that the difference between each observation and the observation four months prior in the series will be calculated. This differencing technique help eliminating the trends or seasonal patterns within the data, to achieve more stationary and appropriate data for prediction.
+train_data_diff <- diff(train_data_boxcox, lag = 4)
+
+#Determine the number of differences needed from the diff function to eliminate the trend and seasonal effect.
+d <- ndiffs(train_data_diff)
+```
+
+
+```{r}
+#Even after applying the BoxCox transformation, the data exhibited a pronounced trend and seasonality. Consequently, sarima model will be employed to mitigate this issue. The seasonal parameter set to be TRUE ensures the function accounts for potential seasonal patterns within the data. The parameters d and D specify the order of non-seasonal and seasonal differencing, respectively, required to achieve stationarity in the data. These values were previously determined using the ndiffs() function. Setting D = 1 signifies that seasonal differencing of order 1 will be performed. The function automatically identifies the optimal ARIMA model based on the AIC and returns the fitted model.
+model <- auto.arima(train_data_boxcox, seasonal = TRUE, d = d, D = 1)
+
+# This will be used to check the residuals of the model. From the ACF graph and p-value, the residual of this model can be certained as white noise.
+checkresiduals(model)
+```
+
+```{r}
+# Using forecast to predict the value about the test data.
+forecast_values <- forecast(model, h = length(test_data))
+
+# Invert Box-Cox transformation to get forecasts in original scale
+forecast_values_inv <- InvBoxCox(forecast_values$mean, lambda = BoxCox.lambda(train_data))
+
+# Plot forecasts
+autoplot(forecast_values, PI = FALSE)
+
+# Evaluate accuracy. The result shows that RMSE is about 82 which means the final result is similar to the test value and ME is about -2 which indicates a relatively small average bias in the forecasts.
+accuracy(forecast_values_inv, ts_data)
+
+# Plot forecasts with test data. 
+autoplot(forecast_values, PI = FALSE) +
+  autolayer(test_data, series = "Test Data")
+
+#overall, the indicate model is applicable to predict the number of people each month to the DisneyLand. Therefore, the marketers and advtizers can use the result from this model to predict the peak period each year and have the corresponding strategy to attract the tourists.
+```
+
+
+
+
+```
+
